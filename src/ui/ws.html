@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>PDM Lite · 工作区</title>
+<style>
+body{font-family:system-ui,"Segoe UI",sans-serif;margin:0;background:#f5f6f8;color:#1c1e21}
+.wrap{max-width:1080px;margin:24px auto;padding:0 16px}
+h1{font-size:20px} h3{font-size:15px;margin:0 0 8px}
+a{color:#2563eb;text-decoration:none}
+table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+th,td{padding:7px 10px;text-align:left;font-size:13px;border-bottom:1px solid #eee}
+th{background:#fafafa}
+button{padding:5px 12px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:13px}
+button.primary{background:#2563eb;color:#fff;border-color:#2563eb}
+button.warn{background:#dc2626;color:#fff;border-color:#dc2626}
+button:disabled{opacity:.5;cursor:not-allowed}
+input,select{padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;background:#fff}
+.card{background:#fff;border-radius:8px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.08);margin-top:16px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+#msg{margin-top:10px;font-size:13px;white-space:pre-wrap;color:#555}
+.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;background:#e5e7eb}
+.badge.cur{background:#dcfce7;color:#166534}
+.badge.conflict{background:#fee2e2;color:#991b1b}
+.badge.stale{background:#fef3c7;color:#92400e}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+.muted{color:#888}
+pre{background:#f8f8f8;border-radius:6px;padding:10px;font-size:12px;overflow:auto;max-height:260px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1><a href="/">← 工作区</a> · <span id="title"></span></h1>
+  <div class="card">
+    <div class="row" id="status">加载中…</div>
+    <div class="row" style="margin-top:10px">
+      <button class="primary" onclick="doPull()">拉取同步</button>
+      <button onclick="rescan()">重新扫描</button>
+      <button onclick="loadAll()">刷新</button>
+      <span class="muted">watcher 每 2 秒聚合本机变更；定时/手动拉取远端事件</span>
+    </div>
+    <div id="msg"></div>
+  </div>
+
+  <div class="card" id="conflictCard" style="display:none">
+    <h3 style="color:#991b1b">⚠ 冲突队列（数据已双份留存，任选以哪个为准）</h3>
+    <table><thead><tr><th>零件</th><th>本地</th><th>远端</th><th>时间</th><th>解决</th></tr></thead>
+    <tbody id="conflicts"></tbody></table>
+    <div class="row" style="margin-top:8px">
+      <span class="muted">都保留 = fork：本地方案存为新零件（文件名后缀）</span>
+      <input id="forkName" placeholder="fork 名称（留空自动 part.fork）" style="width:280px">
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>文件（native / neutral）</h3>
+    <table><thead><tr><th>路径</th><th>零件</th><th>状态</th><th>当前修订</th><th>hash</th><th>更新时间</th></tr></thead>
+    <tbody id="files"><tr><td colspan="6">加载中…</td></tr></tbody></table>
+  </div>
+
+  <div class="card">
+    <h3>零件历史 / 回滚 / fork</h3>
+    <div class="row">
+      <select id="part" style="min-width:240px" onchange="loadHistory()"></select>
+      <button onclick="forkPart()">fork 到新零件</button>
+      <button onclick="forkTree()">整装配 fork（含全部依赖）</button>
+      <span class="muted">回滚 = 指针移动 + 工作区落盘；fork = 零拷贝新零件</span>
+    </div>
+    <table style="margin-top:10px"><thead><tr><th>v</th><th>状态</th><th>说明</th><th>作者/设备</th><th>表示</th><th>时间</th><th></th></tr></thead>
+    <tbody id="hist"><tr><td colspan="7">—</td></tr></tbody></table>
+  </div>
+
+  <div class="card">
+    <h3>装配依赖图（STEP 解析，启发式）</h3>
+    <div class="row">
+      <button onclick="depsRescan()">重建依赖图</button>
+      <select id="impactPart" style="min-width:200px" onchange="loadImpact()"></select>
+      <span class="muted">改了该零件，以下装配受影响（传递闭包）</span>
+    </div>
+    <div class="row" style="margin-top:8px" id="impactOut"></div>
+    <table style="margin-top:8px"><thead><tr><th>装配</th><th>引用零件</th><th>来源文件</th></tr></thead>
+    <tbody id="deps"><tr><td colspan="3">—</td></tr></tbody></table>
+  </div>
+
+  <div class="card">
+    <h3>存储裁剪（§7）</h3>
+    <div class="row">
+      <button onclick="prune(true)">dry-run 清单</button>
+      <button class="warn" onclick="prune(false)">执行裁剪</button>
+      <span class="muted">保护规则：current / base 引用 / open 冲突 / 最近 N 个 / T 天内 / pinned</span>
+    </div>
+    <pre id="pruneOut" style="display:none"></pre>
+  </div>
+</div>
+<script>
+const NAME = decodeURIComponent(location.pathname.split('/').pop());
+document.getElementById('title').textContent = NAME;
+const $ = id => document.getElementById(id);
+async function j(url, opt){
+  const r = await fetch(url, opt);
+  const t = await r.text();
+  let d; try { d = JSON.parse(t); } catch(e){ d = t; }
+  if(!r.ok) throw new Error(typeof d === 'string' ? d : JSON.stringify(d));
+  return d;
+}
+function msg(s, err){ const m = $('msg'); m.textContent = s; m.style.color = err ? '#dc2626' : '#555'; }
+async function loadStatus(){
+  try {
+    const s = await j(`/api/ws/${encodeURIComponent(NAME)}/status`);
+    $('status').innerHTML =
+      `<span>后端 <b>${s.backend}</b></span><span>·</span>` +
+      `<span>零件 ${s.parts}</span><span>文件 ${s.files}</span><span>修订 ${s.revisions}</span>` +
+      `<span>对象 ${s.objects}（${(s.bytes/1048576).toFixed(1)} MB）</span>` +
+      `<span class="muted mono">device ${s.device_id.slice(0,8)}</span>`;
+  } catch(e){ $('status').textContent = '状态加载失败: ' + e.message; }
+}
+async function loadFiles(){
+  try {
+    const d = await j(`/api/ws/${encodeURIComponent(NAME)}/files`);
+    $('files').innerHTML = d.map(f => {
+      let badges = `<span class="badge ${f.state==='synced'?'cur':(f.state==='conflicted'?'conflict':'')}">${f.state}</span>`;
+      if (f.remote_ahead) badges += ` <span class="badge stale">⚠ 对方已更新</span>`;
+      if (f.pending_update) badges += ` <span class="badge stale">待更新(占用中)</span>`;
+      return `<tr><td class="mono">${f.rel_path}</td><td>${f.part}</td><td>${badges}</td>` +
+        `<td>${f.seq ?? '-'}</td><td class="mono muted">${f.hash}</td><td class="muted">${f.updated_at || '-'}</td></tr>`;
+    }).join('') || '<tr><td colspan="6">空（native/ neutral/ 下无文件）</td></tr>';
+    const parts = [...new Set(d.map(f => f.part))];
+    const cur = $('part').value;
+    $('part').innerHTML = parts.map(p => `<option>${p}</option>`).join('');
+    if (parts.length) { if (parts.includes(cur)) $('part').value = cur; loadHistory(); }
+  } catch(e){ $('files').innerHTML = `<tr><td colspan="6">${e.message}</td></tr>`; }
+}
+async function loadConflicts(){
+  try {
+    const d = await j(`/api/ws/${encodeURIComponent(NAME)}/conflicts`);
+    $('conflictCard').style.display = d.length ? '' : 'none';
+    $('conflicts').innerHTML = d.map(c =>
+      `<tr><td><b>${c.part}</b></td><td>本地 v${c.local_seq ?? '?'}</td><td>远端 v${c.remote_seq ?? '?'}</td>` +
+      `<td class="muted">${c.created_at}</td><td class="row">` +
+      `<button onclick="resolve('${c.id}','mine')">用我的</button>` +
+      `<button onclick="resolve('${c.id}','theirs')">用对方的</button>` +
+      `<button onclick="resolve('${c.id}','fork')">都保留(fork)</button></td></tr>`
+    ).join('');
+  } catch(e){ console.error(e); }
+}
+async function resolve(id, choice){
+  const labels = {mine:'用我的', theirs:'用对方的', fork:'都保留(fork)'};
+  if(!confirm(`解决冲突：${labels[choice]}？\n数据双份留存，任一选择都不丢内容。`)) return;
+  msg('解决中…');
+  try {
+    await j(`/api/ws/${encodeURIComponent(NAME)}/conflicts/resolve`,
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body: JSON.stringify({id, choice, fork_name: $('forkName').value.trim() || null})});
+    msg('已解决并广播到网盘'); loadAll();
+  } catch(e){ msg('失败: ' + e.message, true); }
+}
+async function doPull(){
+  msg('拉取中…');
+  try {
+    const r = await j(`/api/ws/${encodeURIComponent(NAME)}/pull`, {method:'POST'});
+    msg(`拉取完成：+${r.new_revisions} 修订，应用 ${r.applied_updates}，推迟 ${r.deferred}，新冲突 ${r.conflicts}，墓碑 ${r.tombstones}，解决事件 ${r.resolutions}，gc ${r.gc}`);
+    loadAll();
+  } catch(e){ msg('失败: ' + e.message, true); }
+}
+async function rescan(){
+  msg('重扫中…');
+  try { const d = await j(`/api/ws/${encodeURIComponent(NAME)}/rescan`, {method:'POST'});
+    msg(`重扫完成：创建 ${d.revisions_created} 个修订`); loadAll();
+  } catch(e){ msg('失败: ' + e.message, true); }
+}
+async function prune(dry){
+  msg(dry ? '生成 dry-run 清单…' : '执行裁剪…');
+  try {
+    const d = await j(`/api/ws/${encodeURIComponent(NAME)}/prune`,
+      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dry_run: dry})});
+    $('pruneOut').style.display = '';
+    $('pruneOut').textContent = (dry ? '[dry-run] ' : '[已执行] ') +
+      `${d.items.length} 个可裁剪修订，共 ${(d.total_bytes/1048576).toFixed(1)} MB` +
+      (dry ? `（执行将删除 ${d.items.length} 修订 + 对象，保留侧引用 ${d.kept_by_reference} 个 hash 不动）` :
+             `，已删 ${d.deleted_objects} 个对象`) + '\n' +
+      d.items.map(i => `  ${i.part} v${i.seq}  ${(i.bytes/1048576).toFixed(1)}MB  ${i.created_at}`).join('\n');
+    loadStatus();
+  } catch(e){ msg('失败: ' + e.message, true); }
+}
+async function loadHistory(){
+  const p = $('part').value; if(!p) return;
+  try {
+    const d = await j(`/api/ws/${encodeURIComponent(NAME)}/history?part=${encodeURIComponent(p)}`);
+    $('hist').innerHTML = d.map(r => {
+      if (r.status === 'pruned') return `<tr><td><b>v${r.seq}</b></td><td><span class="badge">已按策略清理</span></td><td colspan="5" class="muted">对象已裁剪，可从 native 重新导出</td></tr>`;
+      const reps = r.reps.map(x => `<span class="mono">${x.kind}:${x.rel_path.split('/').pop()}</span>`).join('<br>');
+      return `<tr><td><b>v${r.seq}</b></td>` +
+        `<td><span class="badge ${r.status==='current'?'cur':(r.status==='conflict'?'conflict':'')}">${r.status}</span></td>` +
+        `<td>${r.message}</td><td class="muted">${r.author}</td><td>${reps}</td>` +
+        `<td class="muted">${r.created_at}</td>` +
+        `<td>${r.status==='current' ? '' : `<button onclick="rollback('${p}',${r.seq})">回滚到此</button>`}</td></tr>`;
+    }).join('') || '<tr><td colspan="7">无修订</td></tr>';
+  } catch(e){ $('hist').innerHTML = `<tr><td colspan="7">${e.message}</td></tr>`; }
+}
+async function forkPart(){
+  const p = $('part').value; if(!p) return;
+  const name = prompt(`fork「${p}」到新零件，名称：`, p + '.fork');
+  if(!name) return;
+  msg('fork 中…');
+  try {
+    const d = await j(`/api/ws/${encodeURIComponent(NAME)}/fork`,
+      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({part: p, seq: 1, new_name: name})});
+    msg(`fork 完成：新零件 ${d.new_part}，文件 ${d.files.join(', ')}`); loadAll();
+  } catch(e){ msg('失败: ' + e.message, true); }
+}
+async function rollback(part, seq){
+  if(!confirm(`将「${part}」回滚到 v${seq}？工作区文件将被目标版本覆盖。`)) return;
+  msg('回滚中…');
+  try { const d = await j(`/api/ws/${encodeURIComponent(NAME)}/rollback`,
+      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({part, seq})});
+    msg(`回滚完成：落盘 ${d.replaced_files} 个文件`); loadAll();
+  } catch(e){ msg('失败: ' + e.message, true); }
+}
+async function forkTree(){
+  const p = $('part').value; if(!p) return;
+  const suffix = prompt(`整装配 fork「${p}」及其全部依赖零件，名称后缀：`, '方案B');
+  if(!suffix) return;
+  if(!confirm(`按依赖图 fork 可达零件，全部加后缀「.${suffix}」？（不改写装配文件内部引用，CAD 中需重挂）`)) return;
+  msg('整树 fork 中…');
+  try {
+    const d = await j(`/api/ws/${encodeURIComponent(NAME)}/fork-tree`,
+      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({part: p, suffix})});
+    msg(`整装配 fork 完成：${d.forked} 个零件\n` + d.parts.map(x => `  ${x.new_part}`).join('\n'));
+    loadAll();
+  } catch(e){ msg('失败: ' + e.message, true); }
+}
+async function depsRescan(){
+  msg('重建依赖图…');
+  try {
+    const d = await j(`/api/ws/${encodeURIComponent(NAME)}/deps/rescan`, {method:'POST'});
+    msg(`依赖图重建：${d.dep_edges} 条边`); loadDeps();
+  } catch(e){ msg('失败: ' + e.message, true); }
+}
+async function loadDeps(){
+  try {
+    const d = await j(`/api/ws/${encodeURIComponent(NAME)}/deps`);
+    $('deps').innerHTML = d.map(e =>
+      `<tr><td><b>${e.part}</b></td><td>${e.depends_on}</td><td class="mono muted">${e.source}</td></tr>`
+    ).join('') || '<tr><td colspan="3">无边（重扫后自动重建）</td></tr>';
+    const parts = [...new Set([...d.map(e => e.depends_on), ...d.map(e => e.part)])];
+    const cur = $('impactPart').value;
+    $('impactPart').innerHTML = parts.map(p => `<option>${p}</option>`).join('');
+    if (parts.includes(cur)) $('impactPart').value = cur;
+    loadImpact();
+  } catch(e){ $('deps').innerHTML = `<tr><td colspan="3">${e.message}</td></tr>`; }
+}
+async function loadImpact(){
+  const p = $('impactPart').value; if(!p) { $('impactOut').innerHTML=''; return; }
+  try {
+    const d = await j(`/api/ws/${encodeURIComponent(NAME)}/deps/impact?part=${encodeURIComponent(p)}`);
+    $('impactOut').innerHTML = d.affected.length
+      ? d.affected.map(a => `<span class="badge stale">${a}</span>`).join(' ')
+      : '<span class="muted">无装配引用</span>';
+  } catch(e){ $('impactOut').innerHTML = `<span class="muted">${e.message}</span>`; }
+}
+function loadAll(){ loadStatus(); loadFiles(); loadConflicts(); loadDeps(); }
+loadAll();
+</script>
+</body>
+</html>

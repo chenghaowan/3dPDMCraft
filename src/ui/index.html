@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>PDM Lite · 工作区</title>
+<style>
+body{font-family:system-ui,"Segoe UI",sans-serif;margin:0;background:#f5f6f8;color:#1c1e21}
+.wrap{max-width:960px;margin:24px auto;padding:0 16px}
+h1{font-size:20px}
+table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+th,td{padding:8px 12px;text-align:left;font-size:13px;border-bottom:1px solid #eee}
+th{background:#fafafa}
+button{padding:5px 12px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:13px}
+button.primary{background:#2563eb;color:#fff;border-color:#2563eb}
+button:hover{filter:brightness(.97)}
+input,select{padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;width:100%;box-sizing:border;background:#fff}
+.card{background:#fff;border-radius:8px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.08);margin-top:16px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+label{font-size:12px;color:#555;display:block;margin-bottom:2px}
+#msg{margin-top:12px;font-size:13px;white-space:pre-wrap}
+a{color:#2563eb;text-decoration:none}
+.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;background:#e5e7eb}
+.badge.ok{background:#dcfce7;color:#166534}.badge.err{background:#fee2e2;color:#991b1b}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>PDM Lite · 工作区</h1>
+  <table>
+    <thead><tr><th>名称</th><th>路径</th><th>后端</th><th>零件</th><th>文件</th><th>冲突</th><th>最后修订</th><th></th></tr></thead>
+    <tbody id="list"><tr><td colspan="8">加载中…</td></tr></tbody>
+  </table>
+
+  <div class="card">
+    <h3 style="margin-top:0">添加 / 初始化工作区</h3>
+    <div class="grid">
+      <div><label>工作区目录</label><input id="path" placeholder="D:\projects\demo"></div>
+      <div><label>名称（留空用目录名）</label><input id="name"></div>
+      <div><label>EndPoint</label><input id="endpoint" placeholder="oss-cn-hangzhou.aliyuncs.com"></div>
+      <div><label>Bucket</label><input id="bucket" placeholder="solidcraft-pdm"></div>
+      <div><label>AccessKeyId</label><input id="ak"></div>
+      <div><label>AccessKeySecret</label><input id="sk" type="password"></div>
+      <div><label>对象前缀（可选）</label><input id="prefix"></div>
+      <div><label>后端</label><select id="backend"><option value="oss">OSS</option><option value="local">local（离线测试）</option></select></div>
+      <div><label>local 共享存储根（可选，双机同步测试）</label><input id="storeRoot" placeholder="D:\shared\pdm-store"></div>
+      <div><label>用户名</label><input id="user" placeholder="local"></div>
+    </div>
+    <div style="margin-top:12px;display:flex;gap:8px">
+      <button onclick="testOss()">测试连接</button>
+      <button class="primary" onclick="initWs()">初始化工作区</button>
+    </div>
+    <div id="msg"></div>
+  </div>
+</div>
+<script>
+async function j(url, opt){
+  const r = await fetch(url, opt);
+  const t = await r.text();
+  let d; try { d = JSON.parse(t); } catch(e){ d = t; }
+  if(!r.ok) throw new Error(typeof d === 'string' ? d : JSON.stringify(d));
+  return d;
+}
+const v = id => document.getElementById(id).value.trim();
+function body(){
+  return JSON.stringify({
+    name: v('name') || null,
+    path: v('path'),
+    user: v('user') || null,
+    oss: { endpoint: v('endpoint'), bucket: v('bucket'), access_key_id: v('ak'),
+           access_key_secret: v('sk'), prefix: v('prefix'), backend: v('backend'),
+           store_root: v('storeRoot') }
+  });
+}
+async function testOss(){
+  const m = document.getElementById('msg');
+  m.textContent = '测试中…'; m.style.color = '#555';
+  try {
+    const d = await j('/api/oss/test', {method:'POST', headers:{'Content-Type':'application/json'}, body: body()});
+    if (d.ok) { m.textContent = `连接 OK（后端 ${d.backend}），往返 ${d.latency_ms} ms`; m.style.color = '#16a34a'; }
+    else { m.textContent = '失败: ' + d.error; m.style.color = '#dc2626'; }
+  } catch(e){ m.textContent = '失败: ' + e.message; m.style.color = '#dc2626'; }
+}
+async function initWs(){
+  const m = document.getElementById('msg');
+  m.textContent = '初始化中…（首扫 + 基线上传，大目录会较慢）'; m.style.color = '#555';
+  try {
+    const d = await j('/api/workspaces/init', {method:'POST', headers:{'Content-Type':'application/json'}, body: body()});
+    m.textContent = '完成:\n' + JSON.stringify(d, null, 1); m.style.color = '#16a34a';
+    load();
+  } catch(e){ m.textContent = '失败: ' + e.message; m.style.color = '#dc2626'; }
+}
+async function load(){
+  try {
+    const d = await j('/api/workspaces');
+    document.getElementById('list').innerHTML = d.map(w =>
+      `<tr><td><a href="/ws/${encodeURIComponent(w.name)}">${w.name}</a></td><td>${w.path}</td>` +
+      `<td><span class="badge ${w.status==='running'?'ok':'err'}">${w.status}</span></td>` +
+      `<td>${w.parts ?? '-'}</td><td>${w.files ?? '-'}</td><td>${w.conflicts ?? '-'}</td>` +
+      `<td>${w.last_revision || '-'}</td>` +
+      `<td><button onclick="removeWs('${w.name}')">移除</button></td></tr>`
+    ).join('') || '<tr><td colspan="8">暂无工作区，先在下方初始化一个</td></tr>';
+  } catch(e){ document.getElementById('list').innerHTML = `<tr><td colspan="8">加载失败: ${e.message}</td></tr>`; }
+}
+async function removeWs(n){
+  if(!confirm(`从注册表移除「${n}」？（不删除任何数据）`)) return;
+  await j(`/api/workspaces/${encodeURIComponent(n)}/remove`, {method:'POST'});
+  load();
+}
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+/target
+.smoke/
+.pdm/
+*.db
+*.db-wal
+*.db-shm
+.env

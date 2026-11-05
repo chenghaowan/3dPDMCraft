@@ -1,0 +1,22 @@
+[package]
+name = "pdm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+axum = "0.8.9"
+blake3 = "1.8.7"
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.6.7", features = ["derive"] }
+notify-debouncer-full = "0.7.0"
+opendal = { version = "0.59.5", features = ["services-oss", "services-fs"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite"] }
+tokio = { version = "1.54.1", features = ["full"] }
+toml = "1.2.0"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+uuid = { version = "1.29.0", features = ["v4"] }
+walkdir = "2.5.0"
